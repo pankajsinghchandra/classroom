@@ -1,0 +1,344 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Syllabus Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #f3f4f6 0%, #ffffff 100%);
+            color: #1a202c;
+            font-family: sans-serif;
+        }
+        .badge { padding: 0.5rem 1rem; border-radius: 9999px; color: white; transition: all 0.3s ease; }
+        .badge-pending { background-color: #f97316; }
+        .badge-completed { background-color: #22c55e; }
+        .badge-low { background-color: #ef4444; }
+        .progress-circle { position: relative; width: 60px; height: 60px; }
+        .progress-circle svg { transform: rotate(-90deg); }
+        .progress-circle .circle-bg { fill: none; stroke: #e5e7eb; stroke-width: 5; }
+        .progress-circle .circle { fill: none; stroke: #4f46e5; stroke-width: 5; stroke-linecap: round; }
+        .progress-circle .percentage { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 16px; font-weight: bold; color: #1a202c; }
+        .subject-card { transition: transform 0.3s ease, box-shadow 0.3s ease; background-color: #ffffff; }
+        .subject-card.math { background-color: #3b82f6; color: white; }
+        .subject-card.math-workbook { background-color: #93c5fd; color: #1a202c; }
+        .subject-card.hindi { background-color: #ef4444; color: white; }
+        .subject-card.hindi-workbook { background-color: #f87171; color: #1a202c; }
+        .subject-card.english { background-color: #10b981; color: white; }
+        .subject-card.english-workbook { background-color: #6ee7b7; color: #1a202c; }
+        .subject-card.evs { background-color: #f59e0b; color: white; }
+        .subject-card.evs-workbook { background-color: #fbbf24; color: #1a202c; }
+        .subject-card:hover { transform: scale(1.02); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal-content { background: #ffffff; margin: 5% auto; padding: 20px; width: 90%; max-width: 896px; border-radius: 8px; max-height: 80vh; overflow-y: auto; color: #1a202c; }
+        .close-modal { float: right; font-size: 24px; cursor: pointer; color: #1a202c; }
+        .lesson-checkbox { 
+            appearance: none; 
+            width: 20px; 
+            height: 20px; 
+            border: 2px solid #4f46e5; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            transition: all 0.3s ease; 
+        }
+        .lesson-checkbox:checked { 
+            background-color: #4f46e5; 
+            border-color: #4338ca; 
+        }
+        .lesson-checkbox:checked::after { 
+            content: '✔'; 
+            color: white; 
+            font-size: 14px; 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%); 
+        }
+        .lesson-checkbox:hover { 
+            border-color: #6366f1; 
+            box-shadow: 0 0 5px rgba(79, 70, 229, 0.5); 
+        }
+        .notification {
+            background-color: #ef4444;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #10b981;
+            color: white;
+            padding: 1rem;
+            border-radius: 8px;
+            animation: slideIn 0.5s ease forwards, slideOut 0.5s ease 2s forwards;
+            z-index: 1001;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes slideOut {
+            from { transform: translateX(0); opacity: 1; }
+            to { transform: translateX(100%); opacity: 0; }
+        }
+        .spinner {
+            display: none;
+            border: 4px solid #e5e7eb;
+            border-top: 4px solid #4f46e5;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        #class-selection {
+            position: sticky;
+            top: 0;
+            z-index: 800;
+            background: #ffffff;
+            padding: 1rem 0;
+        }
+        button:hover {
+            transform: scale(1.05);
+            transition: transform 0.2s ease;
+        }
+        .notes-input {
+            width: 200px;
+            height: 28px;
+            resize: none;
+            font-size: 0.875rem;
+            padding: 0.25rem;
+        }
+        @media (max-width: 640px) {
+            .modal-content { width: 95%; }
+            .subject-card { margin-bottom: 1rem; }
+            .notes-input { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Page -->
+    <div id="login-page" class="container mx-auto p-4 sm:p-8 flex items-center justify-center min-h-screen">
+        <div class="bg-white p-6 sm:p-8 rounded-lg shadow-md w-full max-w-md">
+            <h2 class="text-2xl font-bold mb-6 text-center text-indigo-600"><i class="fas fa-lock mr-2"></i>Login</h2>
+            <div class="mb-4">
+                <label for="school-name" class="block text-sm font-medium">School Name</label>
+                <select id="school-name" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" aria-label="Select school">
+                    <option value="" disabled selected>Select School</option>
+                </select>
+                <p id="school-name-error" class="text-red-500 text-sm mt-1 hidden">Please select a school.</p>
+            </div>
+            <div class="mb-4">
+                <label for="username" class="block text-sm font-medium">Username</label>
+                <input id="username" type="text" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" placeholder="Enter username" aria-label="Username">
+            </div>
+            <div class="mb-4">
+                <label for="password" class="block text-sm font-medium">Password</label>
+                <input id="password" type="password" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" placeholder="Enter password" aria-label="Password">
+            </div>
+            <button id="login-btn" type="button" class="w-full bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700 transition duration-300 relative" aria-label="Login">
+                <span id="login-btn-text">Login</span>
+                <div id="login-spinner" class="spinner absolute right-4 top-1/2 transform -translate-y-1/2"></div>
+            </button>
+            <p id="login-error" class="text-red-500 text-center mt-4 hidden">Invalid credentials</p>
+        </div>
+    </div>
+
+    <!-- Main Dashboard -->
+    <div id="dashboard" class="hidden">
+        <!-- Top Navigation Bar for Admins -->
+        <nav id="top-nav" class="hidden bg-indigo-600 text-white">
+            <ul class="flex justify-center m-0 p-0 list-none">
+                <li id="school-management-nav" class="p-4 hover:bg-indigo-700 cursor-pointer" tabindex="0" aria-label="School Management"><i class="fas fa-school mr-2"></i>School Management</li>
+                <li id="teacher-management-nav" class="p-4 hover:bg-indigo-700 cursor-pointer" tabindex="0" aria-label="Teacher Management"><i class="fas fa-user-cog mr-2"></i>Teacher Management</li>
+            </ul>
+        </nav>
+
+        <div id="dashboard-content" class="container mx-auto p-4 sm:p-8">
+            <div class="flex flex-col sm:flex-row justify-between items-center mb-8">
+                <h1 class="text-2xl sm:text-3xl font-bold text-indigo-600"><i class="fas fa-book-open mr-2"></i>Syllabus Tracker</h1>
+                <div class="flex flex-wrap gap-2 mt-4 sm:mt-0">
+                    <button id="switch-school-btn" class="bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600 transition duration-300" tabindex="0" aria-label="Switch school">Switch School</button>
+                    <button id="export-data-btn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition duration-300 hidden" tabindex="0" aria-label="Export data">Export Data</button>
+                    <button id="export-pdf-btn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition duration-300 hidden" tabindex="0" aria-label="Export as PDF">Export as PDF</button>
+                    <label for="import-data-input" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition duration-300 cursor-pointer inline-block hidden" id="import-data-btn" aria-label="Import data">Import Data</label>
+                    <input type="file" id="import-data-input" accept=".json" class="hidden">
+                    <button id="logout-btn" class="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition duration-300" tabindex="0" aria-label="Logout">Logout</button>
+                </div>
+            </div>
+
+            <!-- Welcome Message for Admin -->
+            <div id="welcome-message" class="hidden bg-indigo-50 p-4 rounded-lg mb-6 text-indigo-800">
+                <p>Welcome, Admin! It looks like there are no schools yet. Please go to <strong>School Management</strong> to add a school.</p>
+            </div>
+
+            <!-- Admin School Management -->
+            <div id="admin-school-management" class="hidden">
+                <h2 class="text-2xl font-semibold mb-4 text-indigo-600"><i class="fas fa-school mr-2"></i>School Management</h2>
+                <div class="bg-white p-6 rounded-lg shadow-md mb-4">
+                    <h3 class="text-xl font-medium mb-4">Add School</h3>
+                    <div class="grid grid-cols-1 gap-4">
+                        <input id="new-school-name" type="text" placeholder="School Name" class="p-2 border rounded-lg" aria-label="School name">
+                    </div>
+                    <button id="add-school-btn" class="mt-4 bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600" tabindex="0" aria-label="Add school">Add School</button>
+                </div>
+                <div id="school-list" class="bg-white p-6 rounded-lg shadow-md"></div>
+            </div>
+
+            <!-- Admin Teacher Management -->
+            <div id="admin-teacher-management" class="hidden">
+                <h2 class="text-2xl font-semibold mb-4 text-indigo-600"><i class="fas fa-user-cog mr-2"></i>Teacher Management</h2>
+                <div class="bg-white p-6 rounded-lg shadow-md mb-4">
+                    <h3 class="text-xl font-medium mb-4">Add Teacher</h3>
+                    <div class="mb-4">
+                        <label for="teacher-school-select" class="block text-sm font-medium">Select School</label>
+                        <select id="teacher-school-select" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" aria-label="Select school for teacher">
+                            <option value="" disabled selected>Select School</option>
+                        </select>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <input id="teacher-username" type="text" placeholder="Teacher Username" class="p-2 border rounded-lg" aria-label="Teacher username">
+                        <input id="teacher-password" type="password" placeholder="Teacher Password" class="p-2 border rounded-lg" aria-label="Teacher password">
+                    </div>
+                    <button id="add-teacher-btn" class="mt-4 bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600" tabindex="0" aria-label="Add teacher">Add Teacher</button>
+                </div>
+                <div id="teacher-list" class="bg-white p-6 rounded-lg shadow-md"></div>
+            </div>
+
+            <!-- Teacher Dashboard -->
+            <div id="teacher-dashboard" class="hidden">
+                <!-- Analytics Overview -->
+                <div id="analytics-overview" class="bg-white p-6 rounded-lg shadow-md mb-8">
+                    <h2 class="text-2xl font-semibold mb-4 text-indigo-600"><i class="fas fa-chart-bar mr-2"></i>Overall Syllabus Completion</h2>
+                    <canvas id="analyticsChartCanvas"></canvas>
+                </div>
+
+                <!-- Class Selection -->
+                <div id="class-selection" class="mb-8">
+                    <h2 class="text-2xl font-semibold mb-4 text-indigo-600"><i class="fas fa-school mr-2"></i>Select Class</h2>
+                    <select id="class-select" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" aria-label="Select class">
+                        <option value="" disabled selected>Select a class</option>
+                        <option value="1">Class 1</option>
+                        <option value="2">Class 2</option>
+                        <option value="3">Class 3</option>
+                        <option value="4">Class 4</option>
+                        <option value="5">Class 5</option>
+                    </select>
+                </div>
+
+                <!-- Progress Summary -->
+                <div id="progress-summary" class="bg-white p-6 rounded-lg shadow-md mb-8 hidden">
+                    <h2 class="text-2xl font-semibold mb-4 text-indigo-600">Progress Summary</h2>
+                    <p id="summary-text" class="text-gray-700"></p>
+                </div>
+
+                <!-- Filters, Search, and Date Range -->
+                <div class="mb-8 flex flex-col md:flex-row gap-4">
+                    <div>
+                        <label for="lesson-filter" class="block text-sm font-medium mb-2">Filter Lessons</label>
+                        <select id="lesson-filter" class="w-full p-2 border rounded-lg" aria-label="Filter lessons">
+                            <option value="all">All Lessons</option>
+                            <option value="completed">Completed</option>
+                            <option value="pending">Pending</option>
+                        </select>
+                    </div>
+                    <div class="flex-1">
+                        <label for="lesson-search" class="block text-sm font-medium mb-2">Search Lessons</label>
+                        <input id="lesson-search" type="text" placeholder="Search lessons..." class="w-full p-2 border rounded-lg" aria-label="Search lessons">
+                    </div>
+                    <div>
+                        <label for="date-filter" class="block text-sm font-medium mb-2">Completion Date Range</label>
+                        <select id="date-filter" class="w-full p-2 border rounded-lg" aria-label="Filter by completion date">
+                            <option value="all">All Time</option>
+                            <option value="last7">Last 7 Days</option>
+                            <option value="last30">Last 30 Days</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Notifications -->
+                <div id="notifications" class="mb-8"></div>
+
+                <!-- Subject List -->
+                <div id="subject-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8"></div>
+
+                <!-- Syllabus Completion Chart -->
+                <div id="syllabus-chart" class="bg-white p-6 rounded-lg shadow-md mb-6">
+                    <h3 class="text-xl font-medium mb-4 text-indigo-600">Syllabus Completion Chart</h3>
+                    <canvas id="syllabusChartCanvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Subject Details Modal -->
+    <div id="subject-details-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal" tabindex="0" aria-label="Close modal">×</span>
+            <h2 id="modal-subject-name" class="text-2xl font-bold mb-4 text-indigo-600"></h2>
+            <div class="flex flex-wrap gap-2 mb-4">
+                <button id="update-syllabus-btn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 relative" tabindex="0" aria-label="Update syllabus">
+                    <span id="update-btn-text">Update Syllabus</span>
+                    <div id="update-spinner" class="spinner absolute right-4 top-1/2 transform -translate-y-1/2"></div>
+                </button>
+                <button id="undo-btn" class="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 hidden" tabindex="0" aria-label="Undo last update">Undo</button>
+                <button id="mark-all-completed-btn" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600" tabindex="0" aria-label="Mark all lessons as completed">Mark All Completed</button>
+            </div>
+            <div id="update-history" class="mb-4"></div>
+            <div id="modal-lessons-container" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <script src="./app.js"></script>
+</body>
+</html>
