@@ -1,0 +1,528 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Syllabus Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #f3f4f6 0%, #ffffff 100%);
+            color: #1a202c;
+            font-family: 'Noto Sans Devanagari', sans-serif;
+        }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #333;
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 5px;
+            z-index: 1000;
+        }
+        .spinner {
+            display: none;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 100;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background-color: #fff;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-width: 600px;
+            border-radius: 8px;
+        }
+        .close-modal {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close-modal:hover,
+        .close-modal:focus {
+            color: #000;
+            text-decoration: none;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="font-sans">
+    <div id="login-page" class="container mx-auto p-8 flex items-center justify-center h-screen">
+        <form id="login-form" class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+            <h2 class="text-2xl font-bold mb-6 text-center text-indigo-600"><i class="fas fa-lock mr-2"></i>Login</h2>
+            <div class="mb-4">
+                <label for="school-name" class="block text-sm font-medium">School Name</label>
+                <select id="school-name" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" aria-label="Select school">
+                    <option value="" disabled selected>Select School</option>
+                </select>
+                <p id="school-name-error" class="text-red-500 text-sm mt-1 hidden">Please select a school.</p>
+            </div>
+            <div class="mb-4">
+                <label for="username" class="block text-sm font-medium">Username</label>
+                <input id="username" type="text" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" placeholder="Enter username" aria-label="Username">
+            </div>
+            <div class="mb-4">
+                <label for="password" class="block text-sm font-medium">Password</label>
+                <input id="password" type="password" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500" placeholder="Enter password" aria-label="Password">
+            </div>
+            <button id="login-btn" type="submit" class="w-full bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700 transition duration-300 relative" aria-label="Login">
+                <span id="login-btn-text">Login</span>
+                <div id="spinner" class="spinner absolute right-4 top-1/2 transform -translate-y-1/2"></div>
+            </button>
+            <p id="login-error" class="text-red-500 text-center mt-4 hidden">Invalid credentials</p>
+        </form>
+    </div>
+
+    <div id="dashboard" class="hidden">
+        <nav id="top-nav" class="bg-indigo-600 text-white p-4 hidden">
+            <ul class="flex justify-center m-0 p-0 list-none">
+                <li id="school-management-nav" class="p-4 hover:bg-indigo-700 cursor-pointer" tabindex="0" aria-label="School Management"><i class="fas fa-school mr-2"></i>School Management</li>
+                <li id="teacher-management-nav" class="p-4 hover:bg-indigo-700 cursor-pointer" tabindex="0" aria-label="Teacher Management"><i class="fas fa-user-cog mr-2"></i>Teacher Management</li>
+            </ul>
+        </nav>
+
+        <div id="dashboard-content" class="container mx-auto p-8">
+            <div id="welcome-message" class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 hidden mb-4" role="alert">
+                <p class="font-bold">Welcome to Syllabus Tracker!</p>
+                <p>You've successfully logged in as an admin. Use the navigation above to manage schools or teachers.</p>
+            </div>
+
+            <div id="admin-school-management" class="hidden">
+                <h2 class="text-2xl font-bold mb-4 text-indigo-600"><i class="fas fa-school mr-2"></i>School Management</h2>
+                <div class="mb-4">
+                    <input id="school-input" type="text" class="p-2 border rounded-lg w-full md:w-1/2 mr-2" placeholder="Enter school name" aria-label="School name">
+                    <button id="add-school-btn" class="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700" aria-label="Add school"><i class="fas fa-plus mr-2"></i>Add School</button>
+                </div>
+                <div id="school-list" class="grid grid-cols-1 gap-4"></div>
+            </div>
+
+            <div id="admin-teacher-management" class="hidden">
+                <h2 class="text-2xl font-bold mb-4 text-indigo-600"><i class="fas fa-user-cog mr-2"></i>Teacher Management</h2>
+                <div class="mb-4">
+                    <select id="teacher-school-select" class="p-2 border rounded-lg w-full md:w-1/2 mr-2" aria-label="Select school for teacher">
+                        <option value="" disabled selected>Select School</option>
+                    </select>
+                    <button id="add-teacher-btn" class="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700" aria-label="Add teacher"><i class="fas fa-plus mr-2"></i>Add Teacher</button>
+                </div>
+                <div id="teacher-list" class="grid grid-cols-1 gap-4"></div>
+            </div>
+
+            <div id="teacher-dashboard" class="hidden">
+                <h2 class="text-2xl font-bold mb-4 text-indigo-600"><i class="fas fa-chalkboard-teacher mr-2"></i>Teacher Dashboard</h2>
+                <div class="mb-4">
+                    <select id="class-select" class="p-2 border rounded-lg w-full md:w-1/2" aria-label="Select class">
+                        <option value="" disabled selected>Select Class</option>
+                    </select>
+                </div>
+                <div id="subject-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+                <div id="progress-summary" class="mt-4 hidden">
+                    <canvas id="syllabusChartCanvas" aria-label="Syllabus progress chart"></canvas>
+                    <p id="summary-text" class="text-gray-600 mt-2"></p>
+                </div>
+                <div class="mt-4 flex space-x-2">
+                    <button id="export-data-btn" class="bg-green-500 text-white p-2 rounded-lg hover:bg-green-600 hidden" aria-label="Export data"><i class="fas fa-file-export mr-2"></i>Export Data</button>
+                    <button id="export-pdf-btn" class="bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600 hidden" aria-label="Export PDF"><i class="fas fa-file-pdf mr-2"></i>Export PDF</button>
+                    <button id="import-data-btn" class="bg-purple-500 text-white p-2 rounded-lg hover:bg-purple-600 hidden" aria-label="Import data"><i class="fas fa-file-import mr-2"></i>Import Data</button>
+                    <input type="file" id="import-data-input" accept=".json" class="hidden">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="subject-details-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal" tabindex="0" aria-label="Close modal">×</span>
+            <h2 id="modal-subject-name" class="text-2xl font-bold mb-4 text-indigo-600"></h2>
+            <div class="mb-4">
+                <input id="lesson-filter" type="text" class="p-2 border rounded-lg w-full mb-2" placeholder="Filter lessons..." aria-label="Filter lessons">
+                <input id="lesson-search" type="text" class="p-2 border rounded-lg w-full mb-2" placeholder="Search lessons..." aria-label="Search lessons">
+                <input id="date-filter" type="date" class="p-2 border rounded-lg w-full" aria-label="Filter by date">
+            </div>
+            <div id="modal-lessons-container" class="mb-4"></div>
+            <div class="mb-4">
+                <button id="mark-all-completed-btn" class="bg-green-500 text-white p-2 rounded-lg hover:bg-green-600 mr-2" aria-label="Mark all completed"><i class="fas fa-check-double mr-2"></i>Mark All Completed</button>
+                <button id="undo-btn" class="bg-yellow-500 text-white p-2 rounded-lg hover:bg-yellow-600 mr-2" aria-label="Undo"><i class="fas fa-undo mr-2"></i>Undo</button>
+                <button id="update-syllabus-btn" class="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700 relative" aria-label="Update syllabus">
+                    <span id="update-btn-text">Update Syllabus</span>
+                    <div id="update-spinner" class="spinner absolute right-4 top-1/2 transform -translate-y-1/2"></div>
+                </button>
+            </div>
+            <div id="update-history" class="border-t pt-4"></div>
+        </div>
+    </div>
+
+    <div id="notifications"></div>
+
+    <script type="text/javascript">
+        // Global variables
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+
+        // XLSX processing function
+        function filledCell(cell) {
+            return cell !== '' && cell != null;
+        }
+
+        function loadFileData(filename) {
+            if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+                try {
+                    var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                    var firstSheetName = workbook.SheetNames[0];
+                    var worksheet = workbook.Sheets[firstSheetName];
+                    var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                    var filteredData = jsonData.filter(row => row.some(filledCell));
+                    var headerRowIndex = filteredData.findIndex((row, index) =>
+                        row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                    );
+                    if (headerRowIndex === -1 || headerRowIndex > 25) {
+                        headerRowIndex = 0;
+                    }
+                    var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex));
+                    csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                    return csv;
+                } catch (e) {
+                    console.error("XLSX processing error:", e);
+                    showToast("Error processing XLSX file.");
+                    return "";
+                }
+            }
+            return gk_fileData[filename] || "";
+        }
+
+        // Ensure DOM is fully loaded before accessing elements
+        document.addEventListener("DOMContentLoaded", () => {
+            // DOM elements
+            const loginBtn = document.getElementById("login-btn");
+            const loginBtnText = document.getElementById("login-btn-text");
+            const loginSpinner = document.getElementById("spinner"); // Changed to match HTML id="spinner"
+            const loginPage = document.getElementById("login-page");
+            const dashboard = document.getElementById("dashboard");
+            const topNav = document.getElementById("top-nav");
+            const schoolNameSelect = document.getElementById("school-name");
+            const schoolNameError = document.getElementById("school-name-error");
+            const loginError = document.getElementById("login-error");
+            const adminSchoolManagement = document.getElementById("admin-school-management");
+            const adminTeacherManagement = document.getElementById("admin-teacher-management");
+            const teacherDashboard = document.getElementById("teacher-dashboard");
+            const welcomeMessage = document.getElementById("welcome-message");
+            const exportDataBtn = document.getElementById("export-data-btn");
+            const exportPdfBtn = document.getElementById("export-pdf-btn");
+            const importDataBtn = document.getElementById("import-data-btn");
+            const schoolList = document.getElementById("school-list");
+            const teacherSchoolSelect = document.getElementById("teacher-school-select");
+            const classSelect = document.getElementById("class-select");
+            const subjectList = document.getElementById("subject-list");
+            const progressSummary = document.getElementById("progress-summary");
+            const modal = document.getElementById("subject-details-modal");
+            const closeModal = document.querySelector(".close-modal");
+
+            // Validate critical elements
+            if (!loginBtn) {
+                console.error("Element with id 'login-btn' not found.");
+                showToast("Error: Login button not found. Please check the HTML.");
+                return;
+            }
+            if (!loginBtnText) {
+                console.error("Element with id 'login-btn-text' not found.");
+                showToast("Error: Login button text not found.");
+                return;
+            }
+            if (!loginSpinner) {
+                console.error("Element with id 'spinner' not found.");
+                showToast("Error: Login spinner not found.");
+                return;
+            }
+
+            // Initialize state
+            let currentSchool = localStorage.getItem("currentSchool") || "";
+            let currentRole = "";
+            const adminCredentials = { username: "admin", password: "admin123" };
+            let lastSyllabusState = null;
+            let syllabusChart;
+            let analyticsChart;
+            let currentSubject;
+            let currentClass;
+
+            // Initialize localStorage
+            try {
+                if (!localStorage.getItem("schoolAccessList")) {
+                    localStorage.setItem("schoolAccessList", JSON.stringify({}));
+                }
+            } catch (e) {
+                console.error("Error initializing schoolAccessList:", e);
+                showToast("Error accessing storage. Please check browser settings.");
+            }
+
+            // Utility functions
+            function showToast(message) {
+                const toast = document.createElement("div");
+                toast.className = "toast";
+                toast.textContent = message;
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 2500);
+            }
+
+            function populateSchoolDropdown(elementId) {
+                try {
+                    const schoolAccessList = JSON.parse(localStorage.getItem("schoolAccessList")) || {};
+                    const selectElement = document.getElementById(elementId);
+                    selectElement.innerHTML = '<option value="" disabled selected>Select School</option>';
+                    Object.keys(schoolAccessList).forEach(school => {
+                        const option = document.createElement("option");
+                        option.value = school;
+                        option.textContent = school;
+                        selectElement.appendChild(option);
+                    });
+                } catch (e) {
+                    console.error("Error populating school dropdown:", e);
+                    showToast("Error loading schools.");
+                }
+            }
+
+            function initializeSchoolData(schoolName) {
+                try {
+                    if (!localStorage.getItem(`${schoolName}_teachers`)) {
+                        localStorage.setItem(`${schoolName}_teachers`, JSON.stringify([]));
+                    }
+                    if (!localStorage.getItem(`${schoolName}_syllabusProgress`)) {
+                        localStorage.setItem(`${schoolName}_syllabusProgress`, JSON.stringify({}));
+                    }
+                } catch (e) {
+                    console.error("Error initializing school data:", e);
+                    showToast("Error initializing school data.");
+                }
+            }
+
+            function loadSchoolManagement() {
+                try {
+                    schoolList.innerHTML = "";
+                    const schoolAccessList = JSON.parse(localStorage.getItem("schoolAccessList")) || {};
+
+                    if (Object.keys(schoolAccessList).length === 0) {
+                        schoolList.innerHTML = "<p class='text-gray-600'>No schools available. Please add a school.</p>";
+                        return;
+                    }
+
+                    for (const schoolName of Object.keys(schoolAccessList)) {
+                        const schoolCard = document.createElement("div");
+                        schoolCard.className = "bg-gray-50 p-4 rounded-lg flex justify-between items-center mb-2";
+                        schoolCard.innerHTML = `
+                            <span>${schoolName}</span>
+                            <button class="remove-school-btn bg-red-500 text-white px-2 py-1 rounded-lg hover:bg-red-600" data-school="${schoolName}" tabindex="0" aria-label="Remove school ${schoolName}">Remove</button>
+                        `;
+                        schoolList.appendChild(schoolCard);
+                    }
+
+                    document.querySelectorAll(".remove-school-btn").forEach(btn => {
+                        btn.addEventListener("click", () => {
+                            const schoolName = btn.dataset.school;
+                            if (confirm(`Are you sure you want to remove ${schoolName}? This will delete all associated data.`)) {
+                                try {
+                                    const schoolAccessList = JSON.parse(localStorage.getItem("schoolAccessList")) || {};
+                                    delete schoolAccessList[schoolName];
+                                    localStorage.setItem("schoolAccessList", JSON.stringify(schoolAccessList));
+                                    localStorage.removeItem(`${schoolName}_teachers`);
+                                    localStorage.removeItem(`${schoolName}_syllabusProgress`);
+                                    loadSchoolManagement();
+                                    populateSchoolDropdown("school-name");
+                                    populateSchoolDropdown("teacher-school-select");
+                                    showToast(`School ${schoolName} removed successfully!`);
+                                } catch (e) {
+                                    console.error("Error removing school:", e);
+                                    showToast("Error removing school.");
+                                }
+                            }
+                        });
+                    });
+                } catch (e) {
+                    console.error("Error loading school management:", e);
+                    showToast("Error loading schools.");
+                    schoolList.innerHTML = "<p class='text-gray-600'>Error loading schools. Please try again.</p>";
+                }
+            }
+
+            // Placeholder for other functions to avoid undefined errors
+            function loadAnalytics() {
+                console.log("loadAnalytics called (placeholder)");
+                // Implement or remove if not needed
+            }
+
+            function loadSubjects() {
+                console.log("loadSubjects called (placeholder)");
+                // Implement or remove if not needed
+            }
+
+            // Populate dropdowns
+            populateSchoolDropdown("school-name");
+            populateSchoolDropdown("teacher-school-select");
+
+            // Login event listener
+            loginBtn.addEventListener("click", (e) => {
+                e.preventDefault();
+                loginBtn.disabled = true;
+                loginBtnText.textContent = "Logging in...";
+                loginSpinner.style.display = "block";
+
+                setTimeout(() => {
+                    try {
+                        const schoolName = schoolNameSelect.value;
+                        const username = document.getElementById("username").value;
+                        const password = document.getElementById("password").value;
+
+                        let schoolAccessList = JSON.parse(localStorage.getItem("schoolAccessList")) || {};
+                        const isAdmin = username === adminCredentials.username && password === adminCredentials.password;
+
+                        if (isAdmin) {
+                            currentRole = "admin";
+                            if (!schoolName || !schoolAccessList[schoolName]) {
+                                const defaultSchool = "Default School";
+                                schoolAccessList[defaultSchool] = schoolAccessList[defaultSchool] || {};
+                                localStorage.setItem("schoolAccessList", JSON.stringify(schoolAccessList));
+                                currentSchool = defaultSchool;
+                                populateSchoolDropdown("school-name");
+                                populateSchoolDropdown("teacher-school-select");
+                            } else {
+                                currentSchool = schoolName;
+                            }
+                            localStorage.setItem("currentSchool", currentSchool);
+                            initializeSchoolData(currentSchool);
+
+                            loginPage.classList.add("hidden");
+                            dashboard.classList.remove("hidden");
+                            topNav.classList.remove("hidden");
+                            adminSchoolManagement.classList.remove("hidden");
+                            teacherDashboard.classList.add("hidden");
+                            adminTeacherManagement.classList.add("hidden");
+
+                            loadSchoolManagement();
+
+                            if (Object.keys(schoolAccessList).length === 1 && schoolAccessList["Default School"]) {
+                                welcomeMessage.classList.remove("hidden");
+                            } else {
+                                welcomeMessage.classList.add("hidden");
+                            }
+
+                            exportDataBtn.classList.remove("hidden");
+                            exportPdfBtn.classList.remove("hidden");
+                            importDataBtn.classList.remove("hidden");
+                            showToast("Logged in successfully as Admin!");
+                        } else {
+                            if (!schoolName || !schoolAccessList[schoolName]) {
+                                schoolNameError.textContent = "Please select a school.";
+                                schoolNameError.classList.remove("hidden");
+                                loginBtn.disabled = false;
+                                loginBtnText.textContent = "Login";
+                                loginSpinner.style.display = "none";
+                                return;
+                            }
+                            schoolNameError.classList.add("hidden");
+
+                            currentSchool = schoolName;
+                            localStorage.setItem("currentSchool", currentSchool);
+                            initializeSchoolData(currentSchool);
+
+                            const teachers = JSON.parse(localStorage.getItem(`${currentSchool}_teachers`)) || [];
+                            const teacher = teachers.find(t => t.username === username && t.password === password);
+                            if (teacher) {
+                                currentRole = "teacher";
+                                loginPage.classList.add("hidden");
+                                dashboard.classList.remove("hidden");
+                                topNav.classList.add("hidden");
+                                teacherDashboard.classList.remove("hidden");
+                                loadAnalytics();
+                                loadSubjects();
+                                exportDataBtn.classList.add("hidden");
+                                exportPdfBtn.classList.add("hidden");
+                                importDataBtn.classList.add("hidden");
+                                showToast("Logged in successfully as Teacher!");
+                            } else {
+                                loginError.textContent = "Invalid credentials for this school.";
+                                loginError.classList.remove("hidden");
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Login error:", e);
+                        showToast("Error during login. Please try again.");
+                    } finally {
+                        loginBtn.disabled = false;
+                        loginBtnText.textContent = "Login";
+                        loginSpinner.style.display = "none";
+                    }
+                }, 500);
+            });
+
+            // Close modal
+            closeModal.addEventListener("click", () => {
+                modal.style.display = "none";
+            });
+        });
+    </script>
+</body>
+</html>
